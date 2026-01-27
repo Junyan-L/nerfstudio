@@ -17,6 +17,7 @@ Dataset.
 """
 
 from __future__ import annotations
+import cv2
 
 import io
 from copy import deepcopy
@@ -70,6 +71,7 @@ class InputDataset(Dataset):
                 for mask_filename in self._dataparser_outputs.mask_filenames:
                     with open(mask_filename, "rb") as f:
                         self.binary_masks.append(io.BytesIO(f.read()))
+        self.indices = deepcopy(dataparser_outputs.indices)
 
     def __len__(self):
         return len(self._dataparser_outputs.image_filenames)
@@ -81,10 +83,20 @@ class InputDataset(Dataset):
             image_idx: The image index in the dataset.
         """
         image_filename = self._dataparser_outputs.image_filenames[image_idx]
-        if self.cache_compressed_images:
-            pil_image = Image.open(self.binary_images[image_idx])
-        else:
-            pil_image = Image.open(image_filename)
+        if isinstance(image_filename,list):
+            if self.cache_compressed_images:
+                pil_image = Image.open(self.binary_images[image_idx])
+            else:
+                pil_image = Image.open(image_filename[0])
+            depth  = np.load(image_filename[1])
+            depth = depth['arr_0']
+            depth = depth[:, :, 0].astype(np.float32)
+            image = np.array(pil_image, dtype="uint8")
+            if depth.shape[0] != pil_image.size[1] or depth.shape[1] != pil_image.size[0]:
+                depth = cv2.resize(depth, (pil_image.size[0], pil_image.size[1]), cv2.INTER_NEAREST)
+                depth = torch.Tensor(depth).reshape(pil_image.size[0], pil_image.size[1])
+            return [image,depth]
+        
         if self.scale_factor != 1.0:
             width, height = pil_image.size
             newsize = (int(width * self.scale_factor), int(height * self.scale_factor))
@@ -103,9 +115,10 @@ class InputDataset(Dataset):
         Args:
             image_idx: The image index in the dataset.
         """
-        image = self.get_numpy_image(image_idx)
-        image = image / np.float32(255)
-        image = torch.from_numpy(image)
+        if isinstance(self.get_numpy_image(image_idx),list):
+            image = torch.from_numpy(self.get_numpy_image(image_idx)[0].astype("float32") / 255.0)
+            return image
+        image = torch.from_numpy(self.get_numpy_image(image_idx).astype("float32") / 255.0)
         if self._dataparser_outputs.alpha_color is not None and image.shape[-1] == 4:
             assert (self._dataparser_outputs.alpha_color >= 0).all() and (
                 self._dataparser_outputs.alpha_color <= 1
@@ -119,9 +132,11 @@ class InputDataset(Dataset):
         Args:
             image_idx: The image index in the dataset.
         """
-        image = torch.from_numpy(
-            self.get_numpy_image(image_idx)
-        )  # removed astype(np.uint8) because get_numpy_image returns uint8
+        if isinstance(self.get_numpy_image(image_idx),list):
+            image = torch.from_numpy(self.get_numpy_image(image_idx)[0])
+            depth = torch.tensor(self.get_numpy_image(image_idx)[1]).unsqueeze(0).permute(1,2,0)
+            return [image,depth]
+        image = torch.from_numpy(self.get_numpy_image(image_idx))
         if self._dataparser_outputs.alpha_color is not None and image.shape[-1] == 4:
             assert (self._dataparser_outputs.alpha_color >= 0).all() and (
                 self._dataparser_outputs.alpha_color <= 1

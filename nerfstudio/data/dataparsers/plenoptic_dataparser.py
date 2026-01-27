@@ -13,12 +13,15 @@
 # limitations under the License.
 
 """Data parser for blender dataset"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Type
+
+from glob import glob
+from PIL import Image
+import os.path
 
 import imageio
 import numpy as np
@@ -31,11 +34,11 @@ from nerfstudio.utils.colors import get_color
 from nerfstudio.utils.io import load_from_json
 
 
-@dataclass
-class DNeRFDataParserConfig(DataParserConfig):
-    """D-NeRF dataset parser config"""
 
-    _target: Type = field(default_factory=lambda: DNeRF)
+@dataclass
+class PlenDataParserConfig(DataParserConfig):
+
+    _target: Type = field(default_factory=lambda:Plenoptic )
     """target class to instantiate"""
     data: Path = Path("data/dnerf/lego")
     """Directory specifying location of data."""
@@ -43,18 +46,17 @@ class DNeRFDataParserConfig(DataParserConfig):
     """How much to scale the camera origins by."""
     alpha_color: str = "black"
     """alpha color of background"""
-    downsample: int = 2
-    batch_size: int = 3
+    downsample: int = 1
+    batch_size: int = 2
     
 
 @dataclass
-class DNeRF(DataParser):
-    """DNeRF Dataset"""
+class Plenoptic(DataParser):
 
-    config: DNeRFDataParserConfig
+    config: PlenDataParserConfig
     includes_time: bool = True
-
-    def __init__(self, config: DNeRFDataParserConfig):
+    
+    def __init__(self, config: PlenDataParserConfi):
         super().__init__(config=config)
         self.data: Path = config.data
         self.scale_factor: float = config.scale_factor
@@ -62,7 +64,10 @@ class DNeRF(DataParser):
         self.downsample = config.downsample
         self.batch_size = config.batch_size
 
+
+
     def _generate_dataparser_outputs(self, split="train"):
+
         if self.alpha_color is not None:
             alpha_color_tensor = get_color(self.alpha_color)
         else:
@@ -80,11 +85,11 @@ class DNeRF(DataParser):
             times.append(frame["time"])
         poses = np.array(poses).astype(np.float32)
         times = torch.tensor(times, dtype=torch.float32)
-
-        img_0 = imageio.imread(image_filenames[0])
-        image_height, image_width = img_0.shape[:2]
-        camera_angle_x = float(meta["camera_angle_x"])
-        focal_length = 0.5 * image_width / np.tan(0.5 * camera_angle_x)
+        
+        image_height, image_width = 1014,1352
+        
+        focal_length_x = float(meta["fl_x"])
+        focal_length_y = float(meta["fl_y"])
         cx = image_width / 2.0
         cy = image_height / 2.0
         camera_to_world = torch.from_numpy(poses) 
@@ -92,7 +97,7 @@ class DNeRF(DataParser):
         camera_to_world_[:,:3, 1:3] *= -1
         world_to_camera_ = torch.linalg.inv(camera_to_world_).to(torch.float)
         R_ = world_to_camera_[:,:3, :3]
-        R_[0],R_[1] = R_[1].clone() , R_[0].clone()
+        R_[0],R_[1] = R_[0].clone() , R_[1].clone()
         T_ = world_to_camera_[:, :3, 3]
         viewmat_ = torch.zeros((T_.shape[0],4, 4))
         viewmat_[:,:3,:3] = R_
@@ -111,14 +116,11 @@ class DNeRF(DataParser):
         camera_extent = torch.ones_like(times) * camera_extent
         batch_size = torch.ones_like(times) * self.batch_size
         
-        # in x,y,z orderq
-        
-        #camera_to_world[..., 3] *= self.scale_factor
-        scene_box = SceneBox(aabb=torch.tensor([[-1.3, -1.3, -1.3], [1.3, 1.3, 1.3]], dtype=torch.float32))
+        scene_box = SceneBox(aabb=torch.tensor([[-16, -20, 5], [16, 20, 24]], dtype=torch.float32))
         cameras = Cameras(
             camera_to_worlds=camera_to_world,
-            fx=focal_length/self.downsample,
-            fy=focal_length/self.downsample,
+            fx=focal_length_x/self.downsample,
+            fy=focal_length_y/self.downsample,
             cx=cx/self.downsample,
             cy=cy/self.downsample,
             camera_type=CameraType.PERSPECTIVE,
@@ -143,12 +145,6 @@ class DNeRF(DataParser):
         for i in list(range(times.shape[0])):
             random_indices = [d[i] for d in indices_all]
             indices.append(random_indices)
-        '''
-        indices_all = [torch.randperm(times.shape[0]).tolist() for _ in range(self.batch_size)]
-        for i in list(range(times.shape[0])): #[::self.batch_size]: 
-            random_indices = [d[i] for d in indices_all]
-            collated_batch = self._get_collated_batch(random_indices)
-        '''
         dataparser_outputs = DataparserOutputs(
             image_filenames=image_filenames,
             cameras=cameras,

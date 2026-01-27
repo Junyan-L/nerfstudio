@@ -282,7 +282,7 @@ class Viewer:
         if isinstance(pipeline.model, SplatfactoModel):
             self.viser_server.scene.add_point_cloud(
                 "/gaussian_splatting_initial_points",
-                points=pipeline.model.means.numpy(force=True) * VISER_NERFSTUDIO_SCALE_RATIO,
+                points=pipeline.model.xyz.numpy(force=True) * VISER_NERFSTUDIO_SCALE_RATIO,
                 colors=(255, 0, 0),
                 point_size=0.01,
                 point_shape="circle",

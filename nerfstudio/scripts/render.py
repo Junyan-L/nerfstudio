@@ -415,7 +415,7 @@ class BaseRender:
     """Path to config YAML file."""
     output_path: Path = Path("renders/output.mp4")
     """Path to output video file."""
-    image_format: Literal["jpeg", "png"] = "jpeg"
+    image_format: Literal["jpeg", "png"] = "png"
     """Image format"""
     jpeg_quality: int = 100
     """JPEG quality"""
@@ -847,6 +847,13 @@ class DatasetRender(BaseRender):
                             if output_name.startswith("gt-"):
                                 output_name = output_name[3:]
                                 output_image = gt_batch[output_name]
+                                import torch.nn.functional as F
+                                if int(output_image.shape[0]) == 800:
+                                    downsize = 2
+                                else:
+                                    downsize = 1
+                                output_image = F.interpolate(output_image.permute(2, 0, 1).unsqueeze(0), size=(int(output_image.shape[0]/downsize),int(output_image.shape[1]/downsize)), mode='bilinear', align_corners=False)
+                                output_image = output_image.squeeze(0).permute(1, 2, 0)
                             else:
                                 output_image = outputs[output_name]
 
@@ -882,7 +889,8 @@ class DatasetRender(BaseRender):
                             with gzip.open(output_path.with_suffix(".npy.gz"), "wb") as f:
                                 np.save(f, output_image)
                         elif self.image_format == "png":
-                            media.write_image(output_path.with_suffix(".png"), output_image, fmt="png")
+                            if len(output_image.shape) ==3:
+                                media.write_image(output_path.with_suffix(".png"), output_image, fmt="png")
                         elif self.image_format == "jpeg":
                             media.write_image(
                                 output_path.with_suffix(".jpg"), output_image, fmt="jpeg", quality=self.jpeg_quality

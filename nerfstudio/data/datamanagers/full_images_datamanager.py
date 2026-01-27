@@ -43,6 +43,7 @@ from nerfstudio.configs.dataparser_configs import AnnotatedDataParserUnion
 from nerfstudio.data.datamanagers.base_datamanager import DataManager, DataManagerConfig, TDataset
 from nerfstudio.data.dataparsers.base_dataparser import DataparserOutputs
 from nerfstudio.data.dataparsers.nerfstudio_dataparser import NerfstudioDataParserConfig
+from nerfstudio.data.dataparsers.dnerf_dataparser import DNeRFDataParserConfig
 from nerfstudio.data.datasets.base_dataset import InputDataset
 from nerfstudio.data.utils.data_utils import identity_collate
 from nerfstudio.data.utils.dataloaders import ImageBatchStream, _undistort_image
@@ -53,7 +54,7 @@ from nerfstudio.utils.rich_utils import CONSOLE
 @dataclass
 class FullImageDatamanagerConfig(DataManagerConfig):
     _target: Type = field(default_factory=lambda: FullImageDatamanager)
-    dataparser: AnnotatedDataParserUnion = field(default_factory=NerfstudioDataParserConfig)
+    dataparser: AnnotatedDataParserUnion = field(default_factory=DNeRFDataParserConfig)
     camera_res_scale_factor: float = 1.0
     """The scale factor for scaling spatial data such as images, mask, semantics
     along with relevant information about camera intrinsics
@@ -63,6 +64,8 @@ class FullImageDatamanagerConfig(DataManagerConfig):
     eval_num_times_to_repeat_images: int = -1
     """When not evaluating on all images, number of iterations before picking
     new images. If -1, never pick new images."""
+    eval_image_indices: Optional[Tuple[int, ...]] = (0,)
+    """Specifies the image indices to use during eval; if None, uses all."""
     cache_images: Literal["cpu", "gpu", "disk"] = "gpu"
     """Where to cache images in memory. 
         - If "cpu", caches images on cpu RAM as pytorch tensors. 
@@ -107,7 +110,7 @@ class FullImageDatamanager(DataManager, Generic[TDataset]):
         self,
         config: FullImageDatamanagerConfig,
         device: Union[torch.device, str] = "cpu",
-        test_mode: Literal["test", "val", "inference"] = "val",
+        test_mode: Literal["test", "val", "inference"] = "test",
         world_size: int = 1,
         local_rank: int = 0,
         **kwargs,
@@ -123,7 +126,7 @@ class FullImageDatamanager(DataManager, Generic[TDataset]):
         self.local_rank = local_rank
         self.sampler = None
         self.test_mode = test_mode
-        self.test_split = "test" if test_mode in ["test", "inference"] else "val"
+        self.test_split = "test" 
         self.dataparser_config = self.config.dataparser
         if self.config.data is not None:
             self.config.dataparser.data = Path(self.config.data)
@@ -403,12 +406,17 @@ class FullImageDatamanager(DataManager, Generic[TDataset]):
         # This can cause a memory leak: https://github.com/nerfstudio-project/nerfstudio/issues/3335
         data = data.copy()
         data["image"] = data["image"].to(self.device)
-
-        assert len(self.train_cameras.shape) == 1, "Assumes single batch dimension"
-        camera = self.train_cameras[image_idx : image_idx + 1].to(self.device)
-        if camera.metadata is None:
-            camera.metadata = {}
-        camera.metadata["cam_idx"] = image_idx
+        assert len(self.train_dataset.cameras.shape) == 1, "Assumes single batch dimension"
+        if  self.train_dataset.cameras[0].batch_size == 1:
+            camera = self.train_dataset.cameras[image_idx : image_idx + 1].to(self.device)
+            if camera.metadata is None:
+                camera.metadata = {}
+            camera.metadata["cam_idx"] = image_idx
+        else:
+            camera = []
+            for id in self.train_dataset.indices[image_idx]:
+                camera.append(self.train_dataset.cameras[id : id + 1].to(self.device))
+       
         return camera, data
 
     def next_eval(self, step: int) -> Tuple[Cameras, Dict]:
