@@ -69,6 +69,7 @@ class DataparserOutputs:
     """Transform applied by the dataparser."""
     dataparser_scale: float = 1.0
     """Scale applied by the dataparser."""
+    indices: Optional[List[Int]] = None
 
     def as_dict(self) -> dict:
         """Returns the dataclass as a dictionary."""

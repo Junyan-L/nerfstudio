@@ -144,7 +144,7 @@ def apply_depth_colormap(
     colored_image = apply_colormap(depth, colormap_options=colormap_options)
 
     if accumulation is not None:
-        colored_image = colored_image * accumulation + (1 - accumulation)
+        colored_image = colored_image.cuda() * accumulation.cuda() + (1 - accumulation.cuda())
 
     return colored_image
 

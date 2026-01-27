@@ -16,6 +16,7 @@
 Dataset.
 """
 from __future__ import annotations
+import cv2
 
 from copy import deepcopy
 from pathlib import Path
@@ -54,6 +55,7 @@ class InputDataset(Dataset):
         self.cameras = deepcopy(dataparser_outputs.cameras)
         self.cameras.rescale_output_resolution(scaling_factor=scale_factor)
         self.mask_color = dataparser_outputs.metadata.get("mask_color", None)
+        self.indices = deepcopy(dataparser_outputs.indices)
 
     def __len__(self):
         return len(self._dataparser_outputs.image_filenames)
@@ -65,6 +67,16 @@ class InputDataset(Dataset):
             image_idx: The image index in the dataset.
         """
         image_filename = self._dataparser_outputs.image_filenames[image_idx]
+        if isinstance(image_filename,list):
+            pil_image = Image.open(image_filename[0])
+            depth  = np.load(image_filename[1])
+            depth = depth['arr_0']
+            depth = depth[:, :, 0].astype(np.float32)
+            image = np.array(pil_image, dtype="uint8")
+            if depth.shape[0] != pil_image.size[1] or depth.shape[1] != pil_image.size[0]:
+                depth = cv2.resize(depth, (pil_image.size[0], pil_image.size[1]), cv2.INTER_NEAREST)
+                depth = torch.Tensor(depth).reshape(pil_image.size[0], pil_image.size[1])
+            return [image,depth]
         pil_image = Image.open(image_filename)
         if self.scale_factor != 1.0:
             width, height = pil_image.size
@@ -84,6 +96,9 @@ class InputDataset(Dataset):
         Args:
             image_idx: The image index in the dataset.
         """
+        if isinstance(self.get_numpy_image(image_idx),list):
+            image = torch.from_numpy(self.get_numpy_image(image_idx)[0].astype("float32") / 255.0)
+            return image
         image = torch.from_numpy(self.get_numpy_image(image_idx).astype("float32") / 255.0)
         if self._dataparser_outputs.alpha_color is not None and image.shape[-1] == 4:
             assert (self._dataparser_outputs.alpha_color >= 0).all() and (
@@ -98,6 +113,10 @@ class InputDataset(Dataset):
         Args:
             image_idx: The image index in the dataset.
         """
+        if isinstance(self.get_numpy_image(image_idx),list):
+            image = torch.from_numpy(self.get_numpy_image(image_idx)[0])
+            depth = torch.tensor(self.get_numpy_image(image_idx)[1]).unsqueeze(0).permute(1,2,0)
+            return [image,depth]
         image = torch.from_numpy(self.get_numpy_image(image_idx))
         if self._dataparser_outputs.alpha_color is not None and image.shape[-1] == 4:
             assert (self._dataparser_outputs.alpha_color >= 0).all() and (

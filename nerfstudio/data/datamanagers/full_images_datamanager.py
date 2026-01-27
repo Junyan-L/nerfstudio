@@ -41,6 +41,7 @@ from nerfstudio.configs.dataparser_configs import AnnotatedDataParserUnion
 from nerfstudio.data.datamanagers.base_datamanager import DataManager, DataManagerConfig, TDataset
 from nerfstudio.data.dataparsers.base_dataparser import DataparserOutputs
 from nerfstudio.data.dataparsers.nerfstudio_dataparser import NerfstudioDataParserConfig
+from nerfstudio.data.dataparsers.dnerf_dataparser import DNeRFDataParserConfig
 from nerfstudio.data.datasets.base_dataset import InputDataset
 from nerfstudio.utils.misc import get_orig_class
 from nerfstudio.utils.rich_utils import CONSOLE
@@ -49,7 +50,7 @@ from nerfstudio.utils.rich_utils import CONSOLE
 @dataclass
 class FullImageDatamanagerConfig(DataManagerConfig):
     _target: Type = field(default_factory=lambda: FullImageDatamanager)
-    dataparser: AnnotatedDataParserUnion = field(default_factory=NerfstudioDataParserConfig)
+    dataparser: AnnotatedDataParserUnion = field(default_factory=DNeRFDataParserConfig)
     camera_res_scale_factor: float = 1.0
     """The scale factor for scaling spatial data such as images, mask, semantics
     along with relevant information about camera intrinsics
@@ -63,7 +64,7 @@ class FullImageDatamanagerConfig(DataManagerConfig):
     """Specifies the image indices to use during eval; if None, uses all."""
     cache_images: Literal["cpu", "gpu"] = "cpu"
     """Whether to cache images in memory. If "cpu", caches on cpu. If "gpu", caches on device."""
-    cache_images_type: Literal["uint8", "float32"] = "float32"
+    cache_images_type: Literal["uint8", "float32"] = "uint8"
     """The image type returned from manager, caching images in uint8 saves memory"""
     max_thread_workers: Optional[int] = None
     """The maximum number of threads to use for caching images. If None, uses all available threads."""
@@ -84,7 +85,7 @@ class FullImageDatamanager(DataManager, Generic[TDataset]):
         self,
         config: FullImageDatamanagerConfig,
         device: Union[torch.device, str] = "cpu",
-        test_mode: Literal["test", "val", "inference"] = "val",
+        test_mode: Literal["test", "val", "inference"] = "test",
         world_size: int = 1,
         local_rank: int = 0,
         **kwargs,
@@ -95,7 +96,7 @@ class FullImageDatamanager(DataManager, Generic[TDataset]):
         self.local_rank = local_rank
         self.sampler = None
         self.test_mode = test_mode
-        self.test_split = "test" if test_mode in ["test", "inference"] else "val"
+        self.test_split = "test" 
         self.dataparser_config = self.config.dataparser
         if self.config.data is not None:
             self.config.dataparser.data = Path(self.config.data)
@@ -132,14 +133,42 @@ class FullImageDatamanager(DataManager, Generic[TDataset]):
     def cache_images(self, cache_images_option):
         cached_train = []
         cached_eval = []
-
         def process_train_data(idx):
             # cv2.undistort the images / cameras
-            data = self.train_dataset.get_data(idx, image_type=self.config.cache_images_type)
-            camera = self.train_dataset.cameras[idx].reshape(())
-            K = camera.get_intrinsics_matrices().numpy()
-            if camera.distortion_params is None:
+            flag = False
+            if int(self.train_dataset.cameras[0].batch_size)!=1:
+                indices = self.train_dataset.indices
+                data=[]
+                for i in indices[idx]:
+                    #camera = self.train_dataset.cameras[idx].reshape(())
+                    da = self.train_dataset.get_data(i, image_type=self.config.cache_images_type)
+                    if isinstance(da['image'],list):
+                        flag = True
+                    data.append(da)
+                name = [d['image_idx'] for d in data]
+                if flag:
+                    images = [d['image'][0] for d in data]
+                    depth = [d['image'][1] for d in data]
+                    images = torch.stack(images, dim=0)
+                    depth = torch.stack(depth, dim=0)
+                    data={'image_idx':name,'image':images,'depth':depth}
+                    return data
+                images = [d['image'] for d in data]
+                #K = camera.get_intrinsics_matrices().numpy()
+                #print(data)
+                    
+                images = torch.stack(images, dim=0)
+                data={'image_idx':name,'image':images}
                 return data
+            
+            else:
+                data = self.train_dataset.get_data(idx, image_type=self.config.cache_images_type)
+                camera = self.train_dataset.cameras[idx].reshape(())
+                K = camera.get_intrinsics_matrices().numpy()
+                if isinstance(data['image'],list):
+                    data = {'image_idx':data['image_idx'],'image':data['image'][0],'depth': data['image'][1]}
+                if camera.distortion_params is None:
+                    return data
             distortion_params = camera.distortion_params.numpy()
             image = data["image"].numpy()
 
@@ -214,7 +243,11 @@ class FullImageDatamanager(DataManager, Generic[TDataset]):
                     cache["mask"] = cache["mask"].to(self.device)
         else:
             for cache in cached_train:
-                cache["image"] = cache["image"].pin_memory()
+                if isinstance(cache["image"],list):
+                    cache["image"] = cache["image"][0].pin_memory()
+                    cache["depth"] = cache["image"][1].pin_memory()
+                else:
+                    cache["image"] = cache["image"].pin_memory()
                 if "mask" in cache:
                     cache["mask"] = cache["mask"].pin_memory()
             for cache in cached_eval:
@@ -309,12 +342,17 @@ class FullImageDatamanager(DataManager, Generic[TDataset]):
 
         data = deepcopy(self.cached_train[image_idx])
         data["image"] = data["image"].to(self.device)
-
         assert len(self.train_dataset.cameras.shape) == 1, "Assumes single batch dimension"
-        camera = self.train_dataset.cameras[image_idx : image_idx + 1].to(self.device)
-        if camera.metadata is None:
-            camera.metadata = {}
-        camera.metadata["cam_idx"] = image_idx
+        if  self.train_dataset.cameras[0].batch_size == 1:
+            camera = self.train_dataset.cameras[image_idx : image_idx + 1].to(self.device)
+            if camera.metadata is None:
+                camera.metadata = {}
+            camera.metadata["cam_idx"] = image_idx
+        else:
+            camera = []
+            for id in self.train_dataset.indices[image_idx]:
+                camera.append(self.train_dataset.cameras[id : id + 1].to(self.device))
+       
         return camera, data
 
     def next_eval(self, step: int) -> Tuple[Cameras, Dict]:

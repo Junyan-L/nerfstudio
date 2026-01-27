@@ -99,8 +99,9 @@ class Cameras(TensorDataclass):
     distortion_params: Optional[Float[Tensor, "*num_cameras 6"]]
     camera_type: Int[Tensor, "*num_cameras 1"]
     times: Optional[Float[Tensor, "num_cameras 1"]]
+    camera_extent: Optional[Float[Tensor, "num_cameras 1"]]
     metadata: Optional[Dict]
-
+    batch_size: Optional[Int[Tensor, "num_cameras 1"]]
     def __init__(
         self,
         camera_to_worlds: Float[Tensor, "*batch_c2ws 3 4"],
@@ -119,6 +120,8 @@ class Cameras(TensorDataclass):
         ] = CameraType.PERSPECTIVE,
         times: Optional[Float[Tensor, "num_cameras"]] = None,
         metadata: Optional[Dict] = None,
+        camera_extent: Optional[Float[Tensor, "num_cameras"]] = torch.tensor(1.0), 
+        batch_size: Optional[Int[Tensor, "num_cameras 1"]] = None  
     ) -> None:
         """Initializes the Cameras object.
 
@@ -153,10 +156,12 @@ class Cameras(TensorDataclass):
         self.width = self._init_get_height_width(width, self.cx)
         self.camera_type = self._init_get_camera_type(camera_type)
         self.times = self._init_get_times(times)
-
+        self.camera_extent = self._init_get_camera_extent(camera_extent)
         self.metadata = metadata
+        self.batch_size = self._init_get_batch_size(batch_size)
 
         self.__post_init__()  # This will do the dataclass post_init and broadcast all the tensors
+
 
     def _init_get_fc_xy(self, fc_xy: Union[float, torch.Tensor], name: str) -> torch.Tensor:
         """
@@ -263,6 +268,28 @@ class Cameras(TensorDataclass):
             raise ValueError(f"times must be None or a tensor, got {type(times)}")
 
         return times
+    
+    def _init_get_camera_extent(self, camera_extent: Union[None, torch.Tensor]) -> Union[None, torch.Tensor]:
+        if camera_extent is None:
+            camera_extent = None
+        elif isinstance(camera_extent, torch.Tensor):
+            if camera_extent.ndim == 0 or camera_extent.shape[-1] != 1:
+                camera_extent = camera_extent.unsqueeze(-1).to(self.device)
+        else:
+            raise ValueError(f"camera_extent must be None or a tensor, got {type(camera_extent)}")
+
+        return camera_extent
+    
+    def _init_get_batch_size(self, batch_size: Union[None, torch.Tensor]) -> Union[None, torch.Tensor]:
+        if batch_size is None:
+            batch_size = None
+        elif isinstance(batch_size, torch.Tensor):
+            if batch_size.ndim == 0 or batch_size.shape[-1] != 1:
+                batch_size = batch_size.unsqueeze(-1).to(self.device)
+        else:
+            raise ValueError(f"batch_size must be None or a tensor, got {type(batch_size)}")
+
+        return batch_size
 
     @property
     def device(self) -> TORCH_DEVICE:
