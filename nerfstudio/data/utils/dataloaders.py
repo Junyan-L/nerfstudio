@@ -262,6 +262,8 @@ def undistort_view(
         f"The size of image ({data['image'].shape[1]}, {data['image'].shape[0]}) loaded "
         f"does not match the camera parameters ({camera.width.item(), camera.height.item()}), idx = {idx}"
     )
+    if camera.metadata is None:
+        camera.metadata = {}
     if camera.distortion_params is None or torch.all(camera.distortion_params == 0):
         return camera.reshape((1,)), data
     K = camera.get_intrinsics_matrices().numpy()
@@ -281,6 +283,7 @@ def undistort_view(
         cy=torch.Tensor([[float(K[1, 2])]]),
         width=torch.Tensor([[image.shape[1]]]).to(torch.int32),
         height=torch.Tensor([[image.shape[0]]]).to(torch.int32),
+        metadata=camera.metadata,
     )
     return new_camera, data
 
@@ -605,12 +608,14 @@ class ImageBatchStream(IterableDataset):
         sampling_seed: int = 3301,
         cache_images_type: Literal["uint8", "float32"] = "float32",
         device: Union[torch.device, str] = "cpu",
+        shuffle: bool = True,
         custom_image_processor: Optional[Callable[[Cameras, Dict], Tuple[Cameras, Dict]]] = None,
     ):
         self.input_dataset = input_dataset
         self.sampling_seed = sampling_seed
         self.cache_images_type = cache_images_type
         self.device = device
+        self.shuffle = shuffle
         self.custom_image_processor = custom_image_processor
 
     def __iter__(self):
@@ -625,14 +630,16 @@ class ImageBatchStream(IterableDataset):
         worker_indices = dataset_indices[
             slice_start : slice_start + per_worker
         ]  # the indices of the datapoints in the dataset this worker will load
-        r = random.Random(self.sampling_seed)
-        r.shuffle(worker_indices)
+        if self.shuffle:
+            r = random.Random(self.sampling_seed)
+            r.shuffle(worker_indices)
         i = 0  # i refers to what image index we are outputting: i=0 => we are yielding our first image,camera
 
         while True:
             if i >= len(worker_indices):
-                # if we've iterated through all the worker's partition of images, we need to reshuffle
-                r.shuffle(worker_indices)
+                if self.shuffle:
+                    # if we've iterated through all the worker's partition of images, we need to reshuffle
+                    r.shuffle(worker_indices)
                 i = 0
             idx = worker_indices[i]  # idx refers to the actual datapoint index this worker will retrieve
             camera, data = undistort_view(idx, self.input_dataset, self.cache_images_type)  # type: ignore

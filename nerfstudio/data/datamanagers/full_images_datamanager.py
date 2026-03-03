@@ -66,7 +66,7 @@ class FullImageDatamanagerConfig(DataManagerConfig):
     new images. If -1, never pick new images."""
     eval_image_indices: Optional[Tuple[int, ...]] = (0,)
     """Specifies the image indices to use during eval; if None, uses all."""
-    cache_images: Literal["cpu", "gpu", "disk"] = "gpu"
+    cache_images: Literal["cpu", "gpu", "disk"] = "cpu"
     """Where to cache images in memory. 
         - If "cpu", caches images on cpu RAM as pytorch tensors. 
         - If "gpu", caches images on device as pytorch tensors. 
@@ -133,7 +133,7 @@ class FullImageDatamanager(DataManager, Generic[TDataset]):
         else:
             self.config.data = self.config.dataparser.data
         self.dataparser = self.dataparser_config.setup()
-        if test_mode == "inference":
+        if test_mode in ["test", "inference"]:
             self.dataparser.downscale_factor = 1  # Avoid opening images
         self.includes_time = self.dataparser.includes_time
         self.train_dataparser_outputs: DataparserOutputs = self.dataparser.get_dataparser_outputs(split="train")
@@ -214,29 +214,57 @@ class FullImageDatamanager(DataManager, Generic[TDataset]):
             assert_never(split)
 
         def undistort_idx(idx: int) -> Dict[str, torch.Tensor]:
-            data = dataset.get_data(idx, image_type=self.config.cache_images_type)
-            camera = dataset.cameras[idx].reshape(())
-            assert data["image"].shape[1] == camera.width.item() and data["image"].shape[0] == camera.height.item(), (
-                f"The size of image ({data['image'].shape[1]}, {data['image'].shape[0]}) loaded "
-                f"does not match the camera parameters ({camera.width.item(), camera.height.item()})"
-            )
-            if camera.distortion_params is None or torch.all(camera.distortion_params == 0):
-                return data
-            K = camera.get_intrinsics_matrices().numpy()
-            distortion_params = camera.distortion_params.numpy()
-            image = data["image"].numpy()
+            # cv2.undistort the images / cameras
+            flag = False
+            if int(dataset.cameras[0].batch_size)!=1:
+                indices = dataset.indices
+                data=[]
+                for i in indices[idx]:
+                    da = dataset.get_data(i, image_type=self.config.cache_images_type)
+                    if isinstance(da['image'],list):
+                        flag = True
+                    data.append(da)
+                name = [d['image_idx'] for d in data]
+                if flag:
+                    images = [d['image'][0] for d in data]
+                    depth = [d['image'][1] for d in data]
+                    images = torch.stack(images, dim=0)
+                    depth = torch.stack(depth, dim=0)
+                    data={'image_idx':name,'image':images,'depth':depth}
+                else:
+                    images = [d['image'] for d in data]
+                    #K = camera.get_intrinsics_matrices().numpy()
+                    #print(data)
+                        
+                    images = torch.stack(images, dim=0)
+                    data={'image_idx':name,'image':images}
+                
+            else:
+                data = dataset.get_data(idx, image_type=self.config.cache_images_type)
+                camera = dataset.cameras[idx].reshape(())
+                assert data["image"].shape[1] == camera.width.item() and data["image"].shape[0] == camera.height.item(), (
+                    f"The size of image ({data['image'].shape[1]}, {data['image'].shape[0]}) loaded "
+                    f"does not match the camera parameters ({camera.width.item(), camera.height.item()})"
+                )
+                if camera.distortion_params is None or torch.all(camera.distortion_params == 0):
+                    return data
+                K = camera.get_intrinsics_matrices().numpy()
+                if isinstance(data['image'],list):
+                    data = {'image_idx':data['image_idx'],'image':data['image'][0],'depth': data['image'][1]}
+                distortion_params = camera.distortion_params.numpy()
+                image = data["image"].numpy()
 
-            K, image, mask = _undistort_image(camera, distortion_params, data, image, K)
-            data["image"] = torch.from_numpy(image)
-            if mask is not None:
-                data["mask"] = mask
+                K, image, mask = _undistort_image(camera, distortion_params, data, image, K)
+                data["image"] = torch.from_numpy(image)
+                if mask is not None:
+                    data["mask"] = mask
 
-            dataset.cameras.fx[idx] = float(K[0, 0])
-            dataset.cameras.fy[idx] = float(K[1, 1])
-            dataset.cameras.cx[idx] = float(K[0, 2])
-            dataset.cameras.cy[idx] = float(K[1, 2])
-            dataset.cameras.width[idx] = image.shape[1]
-            dataset.cameras.height[idx] = image.shape[0]
+                dataset.cameras.fx[idx] = float(K[0, 0])
+                dataset.cameras.fy[idx] = float(K[1, 1])
+                dataset.cameras.cx[idx] = float(K[0, 2])
+                dataset.cameras.cy[idx] = float(K[1, 2])
+                dataset.cameras.width[idx] = image.shape[1]
+                dataset.cameras.height[idx] = image.shape[0]
             return data
 
         CONSOLE.log(f"Caching / undistorting {split} images")
@@ -263,7 +291,11 @@ class FullImageDatamanager(DataManager, Generic[TDataset]):
                 self.train_cameras = self.train_dataset.cameras.to(self.device)
         elif cache_images_device == "cpu":
             for cache in undistorted_images:
-                cache["image"] = cache["image"].pin_memory()
+                if isinstance(cache["image"],list):
+                    cache["image"] = cache["image"][0].pin_memory()
+                    cache["depth"] = cache["image"][1].pin_memory()
+                else:
+                    cache["image"] = cache["image"].pin_memory()
                 if "mask" in cache:
                     cache["mask"] = cache["mask"].pin_memory()
                 self.train_cameras = self.train_dataset.cameras
@@ -322,6 +354,7 @@ class FullImageDatamanager(DataManager, Generic[TDataset]):
                 sampling_seed=self.config.train_cameras_sampling_seed,
                 cache_images_type=self.config.cache_images_type,
                 device=self.device,
+                shuffle=True,
                 custom_image_processor=self.custom_image_processor,
             )
             self.train_image_dataloader = DataLoader(
@@ -340,6 +373,7 @@ class FullImageDatamanager(DataManager, Generic[TDataset]):
                 sampling_seed=self.config.train_cameras_sampling_seed,
                 cache_images_type=self.config.cache_images_type,
                 device=self.device,
+                shuffle=False,
                 custom_image_processor=self.custom_image_processor,
             )
             self.eval_image_dataloader = DataLoader(

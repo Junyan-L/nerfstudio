@@ -60,6 +60,10 @@ class InputDataset(Dataset):
         self.cameras.rescale_output_resolution(scaling_factor=scale_factor)
         self.mask_color = dataparser_outputs.metadata.get("mask_color", None)
         self.cache_compressed_images = cache_compressed_images
+        if isinstance(dataparser_outputs.metadata, dict) and "downscale_factor" in dataparser_outputs.metadata:
+            self.downscale_factor = dataparser_outputs.metadata["downscale_factor"]
+        else:
+            self.downscale_factor = 1.0
         """If cache_compressed_images == True, cache all the image files into RAM in their compressed form (jpeg, png, etc. but not as pytorch tensors)"""
         if cache_compressed_images:
             self.binary_images = []
@@ -71,10 +75,39 @@ class InputDataset(Dataset):
                 for mask_filename in self._dataparser_outputs.mask_filenames:
                     with open(mask_filename, "rb") as f:
                         self.binary_masks.append(io.BytesIO(f.read()))
-        self.indices = deepcopy(dataparser_outputs.indices)
+        if isinstance(dataparser_outputs.metadata, dict) and "indices" in dataparser_outputs.metadata:
+            self.indices = deepcopy(dataparser_outputs.metadata["indices"])
 
     def __len__(self):
         return len(self._dataparser_outputs.image_filenames)
+    
+    def _downscale_if_required(self, images):
+        
+        d = self.downscale_factor
+
+        if len(images.shape) == 4:
+            if d > 1:
+                new_size = [images.shape[1] // d, images.shape[2] // d]
+
+                # torchvision can be slow to import, so we do it lazily.
+                import torchvision.transforms.functional as TF
+
+                downscaled_images = []
+                for image in images:
+                    downscaled_image = TF.resize(image.permute(2, 0, 1), new_size, antialias=None).permute(1, 2, 0)
+                    downscaled_images.append(downscaled_image)
+                return torch.stack(downscaled_images)
+            return images
+            
+        else:
+            if d > 1:
+                newsize = [images.shape[0] // d, images.shape[1] // d]
+
+                # torchvision can be slow to import, so we do it lazily.
+                import torchvision.transforms.functional as TF
+
+                return TF.resize(images.permute(2, 0, 1), newsize, antialias=None).permute(1, 2, 0)
+            return images
 
     def get_numpy_image(self, image_idx: int) -> npt.NDArray[np.uint8]:
         """Returns the image of shape (H, W, 3 or 4).
@@ -96,7 +129,7 @@ class InputDataset(Dataset):
                 depth = cv2.resize(depth, (pil_image.size[0], pil_image.size[1]), cv2.INTER_NEAREST)
                 depth = torch.Tensor(depth).reshape(pil_image.size[0], pil_image.size[1])
             return [image,depth]
-        
+        pil_image = Image.open(image_filename)
         if self.scale_factor != 1.0:
             width, height = pil_image.size
             newsize = (int(width * self.scale_factor), int(height * self.scale_factor))
@@ -160,6 +193,11 @@ class InputDataset(Dataset):
             image = self.get_image_uint8(image_idx)
         else:
             raise NotImplementedError(f"image_type (={image_type}) getter was not implemented, use uint8 or float32")
+        
+        if isinstance(image,list):
+            image = [self._downscale_if_required(i) for i in image]
+        else:
+            image = self._downscale_if_required(image)
 
         data = {"image_idx": image_idx, "image": image}
         if self._dataparser_outputs.mask_filenames is not None:

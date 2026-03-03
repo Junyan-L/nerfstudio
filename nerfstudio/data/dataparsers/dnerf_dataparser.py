@@ -44,7 +44,7 @@ class DNeRFDataParserConfig(DataParserConfig):
     alpha_color: str = "black"
     """alpha color of background"""
     downsample: int = 2
-    batch_size: int = 3
+    batch_size: int = 1
     
 
 @dataclass
@@ -134,6 +134,7 @@ class DNeRF(DataParser):
             alpha_color=alpha_color_tensor,
             scene_box=scene_box,
             dataparser_scale=self.scale_factor,
+            metadata = {"downscale_factor": self.downsample},
             )
             return dataparser_outputs
         
@@ -155,7 +156,7 @@ class DNeRF(DataParser):
             alpha_color=alpha_color_tensor,
             scene_box=scene_box,
             dataparser_scale=self.scale_factor,
-            indices = indices,
+            metadata = {"indices": indices, "downscale_factor": self.downsample},
         )
 
         return dataparser_outputs

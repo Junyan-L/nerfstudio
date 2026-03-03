@@ -3,8 +3,8 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "nerfstudio"
-version = "1.1.5"
+name = "rotor4dgs"
+version = "1.0.0"
 description = "All-in-one repository for state-of-the-art NeRFs"
 readme = "README.md"
 license = { text="Apache 2.0"}
@@ -33,6 +33,7 @@ dependencies = [
     "msgpack_numpy>=0.4.8",
     "nerfacc==0.5.2",
     "open3d>=0.16.0",
+    "plyfile>=1.0.3",
     "opencv-python-headless==4.10.0.84",
     "Pillow>=10.3.0",
     "plotly>=5.7.0",
