@@ -855,11 +855,6 @@ class SplatfactoModel(Model):
 
     def forward_1(self,camera,background):
         camera_to_world=camera.camera_to_worlds[0]
-        # camera_to_world[:3, 1:3] *= -1
-        if camera_to_world.shape[0] == 3:
-             camera_to_world = torch.cat(
-                [camera_to_world, torch.tensor([[0, 0, 0, 1]], device=camera_to_world.device)], dim=0
-            )
         world_to_camera = torch.linalg.inv(camera_to_world).to(torch.float)
         R = world_to_camera[:3, :3]
         R[0],R[1] = R[1].clone() , R[0].clone()
